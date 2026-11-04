@@ -3,10 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leitor de Código de Barras</title>
+    <title>Leitor de Código de Barras (Nativo + Fallback)</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             text-align: center;
@@ -14,13 +13,7 @@
             padding: 20px;
             min-height: 100vh;
         }
-
-        h1 {
-            font-size: 1.5rem;
-            color: #222;
-            margin-bottom: 20px;
-        }
-
+        h1 { font-size: 1.5rem; color: #222; margin-bottom: 20px; }
         #scanner-container {
             width: 100%;
             max-width: 500px;
@@ -32,14 +25,13 @@
             aspect-ratio: 4 / 3;
             position: relative;
         }
-
+        /* O Quagga injeta vídeo/canvas aqui; a API nativa usa o vídeo também */
         #scanner-container video,
         #scanner-container canvas {
             width: 100% !important;
             height: 100% !important;
             object-fit: cover;
         }
-
         #result {
             margin-top: 20px;
             font-size: 1.4rem;
@@ -54,20 +46,18 @@
             word-break: break-all;
             box-shadow: 0 2px 6px rgba(0,0,0,0.08);
         }
-
-        #result.erro {
-            color: #b00020;
+        #result.erro { color: #b00020; background: #fbe9e7; }
+        #result.sucesso { color: #0a7c2f; background: #e6f7ec; }
+        #engine-badge {
+            margin-top: 10px;
+            font-size: 0.85rem;
+            color: #666;
+            background: #e9ecef;
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
         }
-
-        #result.sucesso {
-            color: #0a7c2f;
-            background: #e6f7ec;
-        }
-
-        .controls {
-            margin-top: 16px;
-        }
-
+        .controls { margin-top: 16px; }
         button {
             padding: 10px 22px;
             font-size: 1rem;
@@ -78,125 +68,274 @@
             cursor: pointer;
             transition: background 0.2s;
         }
-
         button:hover { background: #0056b3; }
     </style>
 </head>
 <body>
     <h1>📷 Leitor de Código de Barras</h1>
 
-    <!-- Vídeo da câmera será renderizado aqui -->
+    <!-- Container onde o vídeo será renderizado -->
     <div id="scanner-container"></div>
 
     <!-- Resultado da leitura -->
     <div id="result">Aponte a câmera para o código...</div>
+    <div id="engine-badge">Detectando motor...</div>
 
     <div class="controls">
         <button id="btn-reiniciar" style="display:none;">Ler novamente</button>
     </div>
 
-    <!-- Biblioteca Quagga2 via CDN -->
+    <!-- Quagga2 via CDN (será usado apenas se a API nativa não existir) -->
     <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
 
     <script>
+        // ============================================================
+        // CONFIGURAÇÃO E ESTADO GLOBAL
+        // ============================================================
         const resultEl = document.getElementById('result');
+        const badgeEl = document.getElementById('engine-badge');
         const btnReiniciar = document.getElementById('btn-reiniciar');
-        let escaneando = false;
+        const container = document.querySelector('#scanner-container');
 
-        // ---------------------------------------------------------------
-        // Configuração e inicialização do Quagga
-        // ---------------------------------------------------------------
-        function iniciarScanner() {
+        let escaneando = false;
+        let usandoNativo = false; // flag para saber qual motor está ativo
+        let barcodeDetector = null;
+        let nativeScanInterval = null;
+
+        // ============================================================
+        // DETECÇÃO DE SUPORTE À API NATIVA
+        // ============================================================
+        async function verificarSuporteNativo() {
+            // Verifica se a API existe e se consegue listar formatos (indica que funciona)
+            if (!('BarcodeDetector' in window)) {
+                return false;
+            }
+            try {
+                // Alguns navegadores expõem a API mas não implementam getSupportedFormats
+                const formatos = await BarcodeDetector.getSupportedFormats();
+                // Verifica se pelo menos um formato de produto é suportado
+                const formatosProduto = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
+                return formatos.some(f => formatosProduto.includes(f));
+            } catch {
+                return false;
+            }
+        }
+
+        // ============================================================
+        // MOTOR 1: BarcodeDetector API NATIVA
+        // ============================================================
+        async function iniciarNativo() {
+            usandoNativo = true;
+            badgeEl.textContent = 'Motor: Nativo (BarcodeDetector)';
             resultEl.textContent = 'Iniciando câmera...';
             resultEl.className = '';
             btnReiniciar.style.display = 'none';
+
+            // Limpa container (remove vídeos antigos do Quagga, se houver)
+            container.innerHTML = '';
+
+            try {
+                // 1. Cria o elemento de vídeo
+                const video = document.createElement('video');
+                video.setAttribute('autoplay', '');
+                video.setAttribute('playsinline', '');
+                video.muted = true;
+                container.appendChild(video);
+
+                // 2. Obtém o stream da câmera traseira
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: 'environment',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                });
+                video.srcObject = stream;
+
+                // 3. Aguarda o vídeo estar pronto
+                await new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        resolve();
+                    };
+                });
+
+                // 4. Instancia o detector com os formatos desejados
+                //    (limitar os formatos melhora a performance [citation:6])
+                const formatosSuportados = await BarcodeDetector.getSupportedFormats();
+                const formatosDesejados = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39'];
+                const formatosFiltrados = formatosDesejados.filter(f =>
+                    formatosSuportados.includes(f)
+                );
+
+                if (formatosFiltrados.length === 0) {
+                    throw new Error('Nenhum formato de produto suportado pela API nativa.');
+                }
+
+                barcodeDetector = new BarcodeDetector({ formats: formatosFiltrados });
+                escaneando = true;
+                resultEl.textContent = 'Aponte a câmera para o código...';
+
+                // 5. Loop de detecção contínua (a API nativa não tem evento, então usamos loop)
+                nativeScanInterval = setInterval(async () => {
+                    if (!escaneando || !barcodeDetector) return;
+
+                    try {
+                        // O detect() aceita o elemento de vídeo diretamente [citation:2]
+                        const barcodes = await barcodeDetector.detect(video);
+                        if (barcodes.length > 0) {
+                            const codigo = barcodes[0].rawValue;
+                            if (codigo && codigo.length >= 6) {
+                                aoDetectar(codigo);
+                            }
+                        }
+                    } catch (err) {
+                        // Erros esporádicos de frame não são fatais, ignoramos
+                        console.debug('Frame não detectado:', err);
+                    }
+                }, 100); // ~10 tentativas por segundo
+
+            } catch (err) {
+                console.error('Erro no motor nativo:', err);
+                // Se falhar (ex: permissão negada), mostra erro mas NÃO tenta fallback
+                // (o fallback é apenas para falta de suporte, não para erro de câmera)
+                resultEl.textContent = '❌ Erro ao acessar a câmera. Verifique as permissões e use HTTPS.';
+                resultEl.className = 'erro';
+                escaneando = false;
+            }
+        }
+
+        // ============================================================
+        // MOTOR 2: QUAGGA2 (FALLBACK)
+        // ============================================================
+        function iniciarQuagga() {
+            usandoNativo = false;
+            badgeEl.textContent = 'Motor: Quagga2 (fallback)';
+            resultEl.textContent = 'Iniciando câmera...';
+            resultEl.className = '';
+            btnReiniciar.style.display = 'none';
+
+            // Limpa container antes de iniciar
+            container.innerHTML = '';
 
             Quagga.init({
                 inputStream: {
                     name: 'Live',
                     type: 'LiveStream',
-                    target: document.querySelector('#scanner-container'),
+                    target: container,
                     constraints: {
-                        facingMode: 'environment', // câmera traseira no celular
+                        facingMode: 'environment',
                         width: { ideal: 1280 },
                         height: { ideal: 720 }
                     }
                 },
-                locator: {
-                    patchSize: 'medium',
-                    halfSample: true
-                },
+                locator: { patchSize: 'medium', halfSample: true },
                 numOfWorkers: navigator.hardwareConcurrency || 2,
                 frequency: 10,
                 decoder: {
-                    // Códigos de produtos mais comuns
                     readers: [
-                        'ean_reader',
-                        'ean_8_reader',
-                        'upc_reader',
-                        'upc_e_reader',
-                        'code_128_reader',
-                        'code_39_reader'
+                        'ean_reader', 'ean_8_reader', 'upc_reader',
+                        'upc_e_reader', 'code_128_reader', 'code_39_reader'
                     ]
                 },
                 locate: true
             }, function (err) {
                 if (err) {
                     console.error('Erro ao iniciar Quagga:', err);
-                    resultEl.textContent = '❌ Erro ao acessar a câmera. Verifique as permissões e use HTTPS ou localhost.';
+                    resultEl.textContent = '❌ Erro ao acessar a câmera. Verifique as permissões e use HTTPS.';
                     resultEl.className = 'erro';
                     return;
                 }
-                console.log('Quagga inicializado.');
+                console.log('Quagga inicializado (fallback).');
                 Quagga.start();
                 escaneando = true;
+                resultEl.textContent = 'Aponte a câmera para o código...';
             });
         }
 
-        // ---------------------------------------------------------------
-        // Callback executado sempre que um código é detectado
-        // ---------------------------------------------------------------
-        function aoDetectar(resultado) {
-            const codigo = resultado.codeResult.code;
-
-            // Filtro simples de validação: evita leituras muito curtas/ruído
-            if (!codigo || codigo.length < 6) return;
-
+        // ============================================================
+        // CALLBACK COMUM DE DETECÇÃO
+        // ============================================================
+        function aoDetectar(codigo) {
             console.log('Código detectado:', codigo);
 
             resultEl.textContent = '✅ Código: ' + codigo;
             resultEl.className = 'sucesso';
 
-            // Vibração (celular)
             if (navigator.vibrate) navigator.vibrate(200);
 
-            // Para o scanner após ler com sucesso
+            // Para o motor ativo
             pararScanner();
             btnReiniciar.style.display = 'inline-block';
         }
 
-        // ---------------------------------------------------------------
-        // Para o scanner e libera a câmera
-        // ---------------------------------------------------------------
+        // ============================================================
+        // PARADA DO SCANNER
+        // ============================================================
         function pararScanner() {
-            if (escaneando) {
-                Quagga.stop();
-                escaneando = false;
+            if (!escaneando) return;
+            escaneando = false;
+
+            // Para o loop nativo
+            if (nativeScanInterval) {
+                clearInterval(nativeScanInterval);
+                nativeScanInterval = null;
+            }
+
+            // Para o Quagga (se estiver ativo)
+            if (!usandoNativo) {
+                try { Quagga.stop(); } catch (e) { /* ignore */ }
+            }
+
+            // Para o stream do vídeo nativo (se houver)
+            if (usandoNativo) {
+                const video = container.querySelector('video');
+                if (video && video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                    video.srcObject = null;
+                }
             }
         }
 
-        // ---------------------------------------------------------------
-        // Botão para ler novamente
-        // ---------------------------------------------------------------
-        btnReiniciar.addEventListener('click', function () {
-            iniciarScanner();
+        // ============================================================
+        // BOTÃO REINICIAR
+        // ============================================================
+        btnReiniciar.addEventListener('click', () => {
+            // Decide qual motor usar novamente
+            if (usandoNativo) {
+                iniciarNativo();
+            } else {
+                iniciarQuagga();
+            }
         });
 
-        // ---------------------------------------------------------------
-        // Registra callback e inicia
-        // ---------------------------------------------------------------
-        Quagga.onDetected(aoDetectar);
-        iniciarScanner();
+        // ============================================================
+        // INICIALIZAÇÃO: escolhe o melhor motor disponível
+        // ============================================================
+        (async function inicializar() {
+            // O Quagga só registra o callback de detecção se for usado
+            if (typeof Quagga !== 'undefined') {
+                Quagga.onDetected(function (resultado) {
+                    // Só processa se estiver no modo Quagga (evita conflito)
+                    if (!usandoNativo && escaneando) {
+                        const codigo = resultado.codeResult.code;
+                        if (codigo && codigo.length >= 6) {
+                            aoDetectar(codigo);
+                        }
+                    }
+                });
+            }
+
+            const suporteNativo = await verificarSuporteNativo();
+
+            if (suporteNativo) {
+                console.log('Usando BarcodeDetector nativo.');
+                iniciarNativo();
+            } else {
+                console.log('BarcodeDetector indisponível. Usando Quagga2 como fallback.');
+                iniciarQuagga();
+            }
+        })();
     </script>
 </body>
 </html>
