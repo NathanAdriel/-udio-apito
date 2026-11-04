@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leitor de Código de Barras</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            text-align: center;
+            background: #f4f4f4;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            color: #222;
+            margin-bottom: 20px;
+        }
+
+        #scanner-container {
+            width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+            aspect-ratio: 4 / 3;
+            position: relative;
+        }
+
+        #scanner-container video,
+        #scanner-container canvas {
+            width: 100% !important;
+            height: 100% !important;
+            object-fit: cover;
+        }
+
+        #result {
+            margin-top: 20px;
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: #333;
+            padding: 14px;
+            background: #fff;
+            border-radius: 8px;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+            word-break: break-all;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        }
+
+        #result.erro {
+            color: #b00020;
+        }
+
+        #result.sucesso {
+            color: #0a7c2f;
+            background: #e6f7ec;
+        }
+
+        .controls {
+            margin-top: 16px;
+        }
+
+        button {
+            padding: 10px 22px;
+            font-size: 1rem;
+            border: none;
+            border-radius: 6px;
+            background: #007bff;
+            color: #fff;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <h1>📷 Leitor de Código de Barras</h1>
+
+    <!-- Vídeo da câmera será renderizado aqui -->
+    <div id="scanner-container"></div>
+
+    <!-- Resultado da leitura -->
+    <div id="result">Aponte a câmera para o código...</div>
+
+    <div class="controls">
+        <button id="btn-reiniciar" style="display:none;">Ler novamente</button>
+    </div>
+
+    <!-- Biblioteca Quagga2 via CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
+
+    <script>
+        const resultEl = document.getElementById('result');
+        const btnReiniciar = document.getElementById('btn-reiniciar');
+        let escaneando = false;
+
+        // ---------------------------------------------------------------
+        // Configuração e inicialização do Quagga
+        // ---------------------------------------------------------------
+        function iniciarScanner() {
+            resultEl.textContent = 'Iniciando câmera...';
+            resultEl.className = '';
+            btnReiniciar.style.display = 'none';
+
+            Quagga.init({
+                inputStream: {
+                    name: 'Live',
+                    type: 'LiveStream',
+                    target: document.querySelector('#scanner-container'),
+                    constraints: {
+                        facingMode: 'environment', // câmera traseira no celular
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    }
+                },
+                locator: {
+                    patchSize: 'medium',
+                    halfSample: true
+                },
+                numOfWorkers: navigator.hardwareConcurrency || 2,
+                frequency: 10,
+                decoder: {
+                    // Códigos de produtos mais comuns
+                    readers: [
+                        'ean_reader',
+                        'ean_8_reader',
+                        'upc_reader',
+                        'upc_e_reader',
+                        'code_128_reader',
+                        'code_39_reader'
+                    ]
+                },
+                locate: true
+            }, function (err) {
+                if (err) {
+                    console.error('Erro ao iniciar Quagga:', err);
+                    resultEl.textContent = '❌ Erro ao acessar a câmera. Verifique as permissões e use HTTPS ou localhost.';
+                    resultEl.className = 'erro';
+                    return;
+                }
+                console.log('Quagga inicializado.');
+                Quagga.start();
+                escaneando = true;
+            });
+        }
+
+        // ---------------------------------------------------------------
+        // Callback executado sempre que um código é detectado
+        // ---------------------------------------------------------------
+        function aoDetectar(resultado) {
+            const codigo = resultado.codeResult.code;
+
+            // Filtro simples de validação: evita leituras muito curtas/ruído
+            if (!codigo || codigo.length < 6) return;
+
+            console.log('Código detectado:', codigo);
+
+            resultEl.textContent = '✅ Código: ' + codigo;
+            resultEl.className = 'sucesso';
+
+            // Vibração (celular)
+            if (navigator.vibrate) navigator.vibrate(200);
+
+            // Para o scanner após ler com sucesso
+            pararScanner();
+            btnReiniciar.style.display = 'inline-block';
+        }
+
+        // ---------------------------------------------------------------
+        // Para o scanner e libera a câmera
+        // ---------------------------------------------------------------
+        function pararScanner() {
+            if (escaneando) {
+                Quagga.stop();
+                escaneando = false;
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Botão para ler novamente
+        // ---------------------------------------------------------------
+        btnReiniciar.addEventListener('click', function () {
+            iniciarScanner();
+        });
+
+        // ---------------------------------------------------------------
+        // Registra callback e inicia
+        // ---------------------------------------------------------------
+        Quagga.onDetected(aoDetectar);
+        iniciarScanner();
+    </script>
+</body>
+</html>
