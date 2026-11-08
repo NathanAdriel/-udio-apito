@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leitor de Código de Barras (Nativo + Fallback)</title>
+    <title>Leitor de Código de Barras + Consulta de Produto</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -13,7 +13,7 @@
             padding: 20px;
             min-height: 100vh;
         }
-        h1 { font-size: 1.5rem; color: #222; margin-bottom: 20px; }
+        h1 { font-size: 1.4rem; color: #222; margin-bottom: 16px; }
         #scanner-container {
             width: 100%;
             max-width: 500px;
@@ -25,7 +25,6 @@
             aspect-ratio: 4 / 3;
             position: relative;
         }
-        /* O Quagga injeta vídeo/canvas aqui; a API nativa usa o vídeo também */
         #scanner-container video,
         #scanner-container canvas {
             width: 100% !important;
@@ -33,11 +32,11 @@
             object-fit: cover;
         }
         #result {
-            margin-top: 20px;
-            font-size: 1.4rem;
+            margin-top: 16px;
+            font-size: 1.2rem;
             font-weight: bold;
             color: #333;
-            padding: 14px;
+            padding: 12px;
             background: #fff;
             border-radius: 8px;
             max-width: 500px;
@@ -49,15 +48,15 @@
         #result.erro { color: #b00020; background: #fbe9e7; }
         #result.sucesso { color: #0a7c2f; background: #e6f7ec; }
         #engine-badge {
-            margin-top: 10px;
-            font-size: 0.85rem;
+            margin-top: 8px;
+            font-size: 0.8rem;
             color: #666;
             background: #e9ecef;
             display: inline-block;
             padding: 4px 12px;
             border-radius: 20px;
         }
-        .controls { margin-top: 16px; }
+        .controls { margin-top: 14px; }
         button {
             padding: 10px 22px;
             font-size: 1rem;
@@ -69,15 +68,52 @@
             transition: background 0.2s;
         }
         button:hover { background: #0056b3; }
+
+        /* ---- Campos do produto ---- */
+        #produto-box {
+            max-width: 500px;
+            margin: 20px auto 0;
+            background: #fff;
+            border-radius: 10px;
+            padding: 16px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            text-align: left;
+            display: none; /* aparece só após detecção */
+        }
+        #produto-box.visivel { display: block; }
+        #produto-box label {
+            display: block;
+            margin-top: 10px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #555;
+        }
+        #produto-box input {
+            width: 100%;
+            padding: 10px;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            margin-top: 4px;
+            background: #fafafa;
+        }
+        #produto-box input:read-only { color: #222; }
+        #produto-nao-encontrado {
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            background: #fbe9e7;
+            color: #b00020;
+            border-radius: 6px;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
     <h1>📷 Leitor de Código de Barras</h1>
 
-    <!-- Container onde o vídeo será renderizado -->
     <div id="scanner-container"></div>
 
-    <!-- Resultado da leitura -->
     <div id="result">Aponte a câmera para o código...</div>
     <div id="engine-badge">Detectando motor...</div>
 
@@ -85,44 +121,153 @@
         <button id="btn-reiniciar" style="display:none;">Ler novamente</button>
     </div>
 
-    <!-- Quagga2 via CDN (será usado apenas se a API nativa não existir) -->
+    <!-- Campos preenchidos automaticamente -->
+    <div id="produto-box">
+        <label for="nomeProduto">Descrição do produto</label>
+        <input type="text" id="nomeProduto" readonly placeholder="—">
+
+        <label for="pluProduto">PLU</label>
+        <input type="text" id="pluProduto" readonly placeholder="—">
+
+        <label for="qtdProduto">Quantidade disponível</label>
+        <input type="text" id="qtdProduto" readonly placeholder="—">
+
+        <label for="itensCx">Itens / CX</label>
+        <input type="text" id="itensCx" readonly placeholder="—">
+
+        <div id="produto-nao-encontrado">❌ EAN não encontrado na planilha.</div>
+    </div>
+
+    <!-- Quagga2 via CDN (fallback) -->
     <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js"></script>
 
     <script>
         // ============================================================
-        // CONFIGURAÇÃO E ESTADO GLOBAL
+        // CONFIGURAÇÃO — LINK DO CSV PUBLICADO NO GOOGLE SHEETS
+        // ============================================================
+        const URL_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqSbZzOQhbqCklK_vY3locHBlDoEU5nNBJBmFdrUt1Z5XjAsnt_XJvQajURlmOXcHtRcqtDrfmYfWU/pub?gid=1042974769&single=true&output=csv';
+
+        // ============================================================
+        // ESTADO GLOBAL
         // ============================================================
         const resultEl = document.getElementById('result');
         const badgeEl = document.getElementById('engine-badge');
         const btnReiniciar = document.getElementById('btn-reiniciar');
         const container = document.querySelector('#scanner-container');
+        const produtoBox = document.getElementById('produto-box');
+        const naoEncontradoEl = document.getElementById('produto-nao-encontrado');
 
+        let baseProdutos = {};   // { EAN: {plu, descricao, qtd, itens_cx} }
         let escaneando = false;
-        let usandoNativo = false; // flag para saber qual motor está ativo
+        let usandoNativo = false;
         let barcodeDetector = null;
         let nativeScanInterval = null;
+
+        // ============================================================
+        // CARREGAMENTO DA BASE (Google Sheets CSV)
+        // ============================================================
+        async function carregarBase() {
+            try {
+                const resp = await fetch(URL_CSV, { cache: 'no-store' });
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const csv = await resp.text();
+                baseProdutos = csvParaBase(csv);
+                console.log('Base carregada:', Object.keys(baseProdutos).length, 'produtos');
+            } catch (err) {
+                console.error('Erro ao carregar base:', err);
+                resultEl.textContent = '⚠️ Base de produtos não carregou. Verifique a planilha.';
+                resultEl.className = 'erro';
+            }
+        }
+
+        function csvParaBase(csv) {
+            const linhas = parseCSV(csv);
+            const base = {};
+            // Colunas: A=0 EAN | B=1 PLU | C=2 DESCRIÇÃO | D=3 QTD | E=4 ITENS/CX
+            for (let i = 0; i < linhas.length; i++) {
+                const l = linhas[i];
+                if (!l || l.length < 3) continue;
+                const ean = (l[0] || '').trim();
+                const plu = (l[1] || '').trim();
+                const descricao = (l[2] || '').trim();
+                const qtdRaw = (l[3] || '').trim();
+                const itensRaw = (l[4] || '').trim();
+
+                if (!/^\d{8,14}$/.test(ean)) continue;
+                if (descricao.toUpperCase() === 'DESCRIÇÃO DE PRODUTO') continue;
+                if (base[ean]) continue; // mantém o primeiro
+
+                base[ean] = {
+                    plu: plu || null,
+                    descricao: descricao || '(sem descrição)',
+                    qtd: qtdRaw === '' ? null : Number(qtdRaw),
+                    itens_cx: itensRaw === '' ? null : Number(itensRaw)
+                };
+            }
+            return base;
+        }
+
+        function parseCSV(texto) {
+            const linhas = [];
+            let campo = '', linha = [], dentroAspas = false;
+            for (let i = 0; i < texto.length; i++) {
+                const c = texto[i];
+                if (dentroAspas) {
+                    if (c === '"' && texto[i + 1] === '"') { campo += '"'; i++; }
+                    else if (c === '"') { dentroAspas = false; }
+                    else { campo += c; }
+                } else {
+                    if (c === '"') dentroAspas = true;
+                    else if (c === ',') { linha.push(campo); campo = ''; }
+                    else if (c === '\n') { linha.push(campo); linhas.push(linha); linha = []; campo = ''; }
+                    else if (c === '\r') { }
+                    else { campo += c; }
+                }
+            }
+            if (campo !== '' || linha.length) { linha.push(campo); linhas.push(linha); }
+            return linhas;
+        }
+
+        // ============================================================
+        // PREENCHIMENTO DOS CAMPOS APÓS DETECÇÃO
+        // ============================================================
+        function preencherProduto(ean) {
+            const prod = baseProdutos[ean];
+            produtoBox.classList.add('visivel');
+
+            if (prod) {
+                document.getElementById('nomeProduto').value = prod.descricao;
+                document.getElementById('pluProduto').value  = prod.plu ?? '';
+                document.getElementById('qtdProduto').value  = prod.qtd ?? '';
+                document.getElementById('itensCx').value     = prod.itens_cx ?? '';
+                naoEncontradoEl.style.display = 'none';
+                resultEl.textContent = '✅ ' + prod.descricao;
+                resultEl.className = 'sucesso';
+            } else {
+                document.getElementById('nomeProduto').value = '';
+                document.getElementById('pluProduto').value  = '';
+                document.getElementById('qtdProduto').value  = '';
+                document.getElementById('itensCx').value     = '';
+                naoEncontradoEl.style.display = 'block';
+                resultEl.textContent = '❌ EAN ' + ean + ' não encontrado';
+                resultEl.className = 'erro';
+            }
+        }
 
         // ============================================================
         // DETECÇÃO DE SUPORTE À API NATIVA
         // ============================================================
         async function verificarSuporteNativo() {
-            // Verifica se a API existe e se consegue listar formatos (indica que funciona)
-            if (!('BarcodeDetector' in window)) {
-                return false;
-            }
+            if (!('BarcodeDetector' in window)) return false;
             try {
-                // Alguns navegadores expõem a API mas não implementam getSupportedFormats
                 const formatos = await BarcodeDetector.getSupportedFormats();
-                // Verifica se pelo menos um formato de produto é suportado
                 const formatosProduto = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
                 return formatos.some(f => formatosProduto.includes(f));
-            } catch {
-                return false;
-            }
+            } catch { return false; }
         }
 
         // ============================================================
-        // MOTOR 1: BarcodeDetector API NATIVA
+        // MOTOR 1: BarcodeDetector NATIVO
         // ============================================================
         async function iniciarNativo() {
             usandoNativo = true;
@@ -130,76 +275,50 @@
             resultEl.textContent = 'Iniciando câmera...';
             resultEl.className = '';
             btnReiniciar.style.display = 'none';
-
-            // Limpa container (remove vídeos antigos do Quagga, se houver)
+            produtoBox.classList.remove('visivel');
+            naoEncontradoEl.style.display = 'none';
             container.innerHTML = '';
 
             try {
-                // 1. Cria o elemento de vídeo
                 const video = document.createElement('video');
                 video.setAttribute('autoplay', '');
                 video.setAttribute('playsinline', '');
                 video.muted = true;
                 container.appendChild(video);
 
-                // 2. Obtém o stream da câmera traseira
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    }
+                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
                 });
                 video.srcObject = stream;
 
-                // 3. Aguarda o vídeo estar pronto
                 await new Promise((resolve) => {
-                    video.onloadedmetadata = () => {
-                        video.play();
-                        resolve();
-                    };
+                    video.onloadedmetadata = () => { video.play(); resolve(); };
                 });
 
-                // 4. Instancia o detector com os formatos desejados
-                //    (limitar os formatos melhora a performance [citation:6])
                 const formatosSuportados = await BarcodeDetector.getSupportedFormats();
                 const formatosDesejados = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39'];
-                const formatosFiltrados = formatosDesejados.filter(f =>
-                    formatosSuportados.includes(f)
-                );
+                const formatosFiltrados = formatosDesejados.filter(f => formatosSuportados.includes(f));
 
-                if (formatosFiltrados.length === 0) {
-                    throw new Error('Nenhum formato de produto suportado pela API nativa.');
-                }
+                if (formatosFiltrados.length === 0) throw new Error('Nenhum formato suportado.');
 
                 barcodeDetector = new BarcodeDetector({ formats: formatosFiltrados });
                 escaneando = true;
                 resultEl.textContent = 'Aponte a câmera para o código...';
 
-                // 5. Loop de detecção contínua (a API nativa não tem evento, então usamos loop)
                 nativeScanInterval = setInterval(async () => {
                     if (!escaneando || !barcodeDetector) return;
-
                     try {
-                        // O detect() aceita o elemento de vídeo diretamente [citation:2]
                         const barcodes = await barcodeDetector.detect(video);
                         if (barcodes.length > 0) {
                             const codigo = barcodes[0].rawValue;
-                            if (codigo && codigo.length >= 6) {
-                                aoDetectar(codigo);
-                            }
+                            if (codigo && codigo.length >= 6) aoDetectar(codigo);
                         }
-                    } catch (err) {
-                        // Erros esporádicos de frame não são fatais, ignoramos
-                        console.debug('Frame não detectado:', err);
-                    }
-                }, 100); // ~10 tentativas por segundo
+                    } catch (err) { /* frame ruim, ignora */ }
+                }, 100);
 
             } catch (err) {
                 console.error('Erro no motor nativo:', err);
-                // Se falhar (ex: permissão negada), mostra erro mas NÃO tenta fallback
-                // (o fallback é apenas para falta de suporte, não para erro de câmera)
-                resultEl.textContent = '❌ Erro ao acessar a câmera. Verifique as permissões e use HTTPS.';
+                resultEl.textContent = '❌ Erro ao acessar a câmera. Use HTTPS e permita o acesso.';
                 resultEl.className = 'erro';
                 escaneando = false;
             }
@@ -214,39 +333,29 @@
             resultEl.textContent = 'Iniciando câmera...';
             resultEl.className = '';
             btnReiniciar.style.display = 'none';
-
-            // Limpa container antes de iniciar
+            produtoBox.classList.remove('visivel');
+            naoEncontradoEl.style.display = 'none';
             container.innerHTML = '';
 
             Quagga.init({
                 inputStream: {
-                    name: 'Live',
-                    type: 'LiveStream',
-                    target: container,
-                    constraints: {
-                        facingMode: 'environment',
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    }
+                    name: 'Live', type: 'LiveStream', target: container,
+                    constraints: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
                 },
                 locator: { patchSize: 'medium', halfSample: true },
                 numOfWorkers: navigator.hardwareConcurrency || 2,
                 frequency: 10,
                 decoder: {
-                    readers: [
-                        'ean_reader', 'ean_8_reader', 'upc_reader',
-                        'upc_e_reader', 'code_128_reader', 'code_39_reader'
-                    ]
+                    readers: ['ean_reader', 'ean_8_reader', 'upc_reader', 'upc_e_reader', 'code_128_reader', 'code_39_reader']
                 },
                 locate: true
             }, function (err) {
                 if (err) {
                     console.error('Erro ao iniciar Quagga:', err);
-                    resultEl.textContent = '❌ Erro ao acessar a câmera. Verifique as permissões e use HTTPS.';
+                    resultEl.textContent = '❌ Erro ao acessar a câmera. Use HTTPS e permita o acesso.';
                     resultEl.className = 'erro';
                     return;
                 }
-                console.log('Quagga inicializado (fallback).');
                 Quagga.start();
                 escaneando = true;
                 resultEl.textContent = 'Aponte a câmera para o código...';
@@ -257,14 +366,13 @@
         // CALLBACK COMUM DE DETECÇÃO
         // ============================================================
         function aoDetectar(codigo) {
+            if (!escaneando) return; // evita múltiplas chamadas
             console.log('Código detectado:', codigo);
 
-            resultEl.textContent = '✅ Código: ' + codigo;
-            resultEl.className = 'sucesso';
+            preencherProduto(codigo);
 
             if (navigator.vibrate) navigator.vibrate(200);
 
-            // Para o motor ativo
             pararScanner();
             btnReiniciar.style.display = 'inline-block';
         }
@@ -276,18 +384,13 @@
             if (!escaneando) return;
             escaneando = false;
 
-            // Para o loop nativo
             if (nativeScanInterval) {
                 clearInterval(nativeScanInterval);
                 nativeScanInterval = null;
             }
-
-            // Para o Quagga (se estiver ativo)
             if (!usandoNativo) {
-                try { Quagga.stop(); } catch (e) { /* ignore */ }
+                try { Quagga.stop(); } catch (e) { }
             }
-
-            // Para o stream do vídeo nativo (se houver)
             if (usandoNativo) {
                 const video = container.querySelector('video');
                 if (video && video.srcObject) {
@@ -301,38 +404,34 @@
         // BOTÃO REINICIAR
         // ============================================================
         btnReiniciar.addEventListener('click', () => {
-            // Decide qual motor usar novamente
-            if (usandoNativo) {
-                iniciarNativo();
-            } else {
-                iniciarQuagga();
-            }
+            if (usandoNativo) iniciarNativo();
+            else iniciarQuagga();
         });
 
         // ============================================================
-        // INICIALIZAÇÃO: escolhe o melhor motor disponível
+        // INICIALIZAÇÃO
         // ============================================================
         (async function inicializar() {
-            // O Quagga só registra o callback de detecção se for usado
+            // 1) Carrega a base de produtos
+            await carregarBase();
+
+            // 2) Registra callback do Quagga (se disponível)
             if (typeof Quagga !== 'undefined') {
                 Quagga.onDetected(function (resultado) {
-                    // Só processa se estiver no modo Quagga (evita conflito)
                     if (!usandoNativo && escaneando) {
                         const codigo = resultado.codeResult.code;
-                        if (codigo && codigo.length >= 6) {
-                            aoDetectar(codigo);
-                        }
+                        if (codigo && codigo.length >= 6) aoDetectar(codigo);
                     }
                 });
             }
 
+            // 3) Escolhe o motor de leitura
             const suporteNativo = await verificarSuporteNativo();
-
             if (suporteNativo) {
                 console.log('Usando BarcodeDetector nativo.');
                 iniciarNativo();
             } else {
-                console.log('BarcodeDetector indisponível. Usando Quagga2 como fallback.');
+                console.log('BarcodeDetector indisponível. Usando Quagga2.');
                 iniciarQuagga();
             }
         })();
