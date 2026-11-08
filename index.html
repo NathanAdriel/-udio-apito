@@ -129,11 +129,11 @@
         <label for="pluProduto">PLU</label>
         <input type="text" id="pluProduto" readonly placeholder="—">
 
-        <label for="qtdProduto">Quantidade disponível</label>
-        <input type="text" id="qtdProduto" readonly placeholder="—">
+        <label for="gramaturaProduto">Gramatura</label>
+        <input type="text" id="gramaturaProduto" readonly placeholder="—">
 
-        <label for="itensCx">Itens / CX</label>
-        <input type="text" id="itensCx" readonly placeholder="—">
+        <label for="marcaProduto">Marca</label>
+        <input type="text" id="marcaProduto" readonly placeholder="—">
 
         <div id="produto-nao-encontrado">❌ EAN não encontrado na planilha.</div>
     </div>
@@ -143,9 +143,9 @@
 
     <script>
         // ============================================================
-        // CONFIGURAÇÃO — LINK DO CSV PUBLICADO NO GOOGLE SHEETS
+        // CONFIGURAÇÃO — NOVO LINK DO CSV PUBLICADO
         // ============================================================
-        const URL_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRqSbZzOQhbqCklK_vY3locHBlDoEU5nNBJBmFdrUt1Z5XjAsnt_XJvQajURlmOXcHtRcqtDrfmYfWU/pub?gid=1042974769&single=true&output=csv';
+        const URL_CSV = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vS6n9cNCwf0qAqFkyGNWRMF86C6nzUKLayvwRyd8Oo6E2sd9jkgA7THIOkwmvSNLGKry4zpg8P5z59O/pub?gid=1564410980&single=true&output=csv';
 
         // ============================================================
         // ESTADO GLOBAL
@@ -157,7 +157,7 @@
         const produtoBox = document.getElementById('produto-box');
         const naoEncontradoEl = document.getElementById('produto-nao-encontrado');
 
-        let baseProdutos = {};   // { EAN: {plu, descricao, qtd, itens_cx} }
+        let baseProdutos = {};   // { EAN: {plu, descricao, gramatura, marca} }
         let escaneando = false;
         let usandoNativo = false;
         let barcodeDetector = null;
@@ -183,8 +183,8 @@
         function csvParaBase(csv) {
             const linhas = parseCSV(csv);
             const base = {};
-            // Estrutura real do CSV publicado (com coluna A vazia):
-            // [0]=vazio | [1]=EAN | [2]=PLU | [3]=DESCRIÇÃO | [4]=QTD | [5]=ITENS/CX
+            // Estrutura esperada do CSV:
+            // [0]=vazio | [1]=EAN | [2]=PLU | [3]=DESCRIÇÃO | [4]=GRAMATURA | [5]=MARCA
             for (let i = 0; i < linhas.length; i++) {
                 const l = linhas[i];
                 if (!l || l.length < 4) continue;
@@ -192,8 +192,8 @@
                 const ean       = (l[1] || '').trim();
                 const plu       = (l[2] || '').trim();
                 const descricao = (l[3] || '').trim();
-                const qtdRaw    = (l[4] || '').trim();
-                const itensRaw  = (l[5] || '').trim();
+                const gramatura = (l[4] || '').trim();
+                const marca     = (l[5] || '').trim();
 
                 if (!/^\d{8,14}$/.test(ean)) continue;
                 if (descricao.toUpperCase() === 'DESCRIÇÃO DE PRODUTO') continue;
@@ -202,8 +202,8 @@
                 base[ean] = {
                     plu: plu || null,
                     descricao: descricao || '(sem descrição)',
-                    qtd: qtdRaw === '' ? null : Number(qtdRaw),
-                    itens_cx: itensRaw === '' ? null : Number(itensRaw)
+                    gramatura: gramatura || null,
+                    marca: marca || null
                 };
             }
             return base;
@@ -240,16 +240,16 @@
             if (prod) {
                 document.getElementById('nomeProduto').value = prod.descricao;
                 document.getElementById('pluProduto').value  = prod.plu ?? '';
-                document.getElementById('qtdProduto').value  = prod.qtd ?? '';
-                document.getElementById('itensCx').value     = prod.itens_cx ?? '';
+                document.getElementById('gramaturaProduto').value = prod.gramatura ?? '';
+                document.getElementById('marcaProduto').value     = prod.marca ?? '';
                 naoEncontradoEl.style.display = 'none';
                 resultEl.textContent = '✅ ' + prod.descricao;
                 resultEl.className = 'sucesso';
             } else {
                 document.getElementById('nomeProduto').value = '';
                 document.getElementById('pluProduto').value  = '';
-                document.getElementById('qtdProduto').value  = '';
-                document.getElementById('itensCx').value     = '';
+                document.getElementById('gramaturaProduto').value = '';
+                document.getElementById('marcaProduto').value     = '';
                 naoEncontradoEl.style.display = 'block';
                 resultEl.textContent = '❌ EAN ' + ean + ' não encontrado';
                 resultEl.className = 'erro';
@@ -368,7 +368,7 @@
         // CALLBACK COMUM DE DETECÇÃO
         // ============================================================
         function aoDetectar(codigo) {
-            if (!escaneando) return; // evita múltiplas chamadas
+            if (!escaneando) return;
             console.log('Código detectado:', codigo);
 
             preencherProduto(codigo);
@@ -414,10 +414,8 @@
         // INICIALIZAÇÃO
         // ============================================================
         (async function inicializar() {
-            // 1) Carrega a base de produtos
             await carregarBase();
 
-            // 2) Registra callback do Quagga (se disponível)
             if (typeof Quagga !== 'undefined') {
                 Quagga.onDetected(function (resultado) {
                     if (!usandoNativo && escaneando) {
@@ -427,7 +425,6 @@
                 });
             }
 
-            // 3) Escolhe o motor de leitura
             const suporteNativo = await verificarSuporteNativo();
             if (suporteNativo) {
                 console.log('Usando BarcodeDetector nativo.');
