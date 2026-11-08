@@ -78,7 +78,7 @@
             padding: 16px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.08);
             text-align: left;
-            display: none; /* aparece só após detecção */
+            display: none;
         }
         #produto-box.visivel { display: block; }
         #produto-box label {
@@ -183,19 +183,21 @@
         function csvParaBase(csv) {
             const linhas = parseCSV(csv);
             const base = {};
-            // Colunas: A=0 EAN | B=1 PLU | C=2 DESCRIÇÃO | D=3 QTD | E=4 ITENS/CX
+            // Estrutura real do CSV publicado (com coluna A vazia):
+            // [0]=vazio | [1]=EAN | [2]=PLU | [3]=DESCRIÇÃO | [4]=QTD | [5]=ITENS/CX
             for (let i = 0; i < linhas.length; i++) {
                 const l = linhas[i];
-                if (!l || l.length < 3) continue;
-                const ean = (l[0] || '').trim();
-                const plu = (l[1] || '').trim();
-                const descricao = (l[2] || '').trim();
-                const qtdRaw = (l[3] || '').trim();
-                const itensRaw = (l[4] || '').trim();
+                if (!l || l.length < 4) continue;
+
+                const ean       = (l[1] || '').trim();
+                const plu       = (l[2] || '').trim();
+                const descricao = (l[3] || '').trim();
+                const qtdRaw    = (l[4] || '').trim();
+                const itensRaw  = (l[5] || '').trim();
 
                 if (!/^\d{8,14}$/.test(ean)) continue;
                 if (descricao.toUpperCase() === 'DESCRIÇÃO DE PRODUTO') continue;
-                if (base[ean]) continue; // mantém o primeiro
+                if (base[ean]) continue; // mantém o primeiro em caso de duplicata
 
                 base[ean] = {
                     plu: plu || null,
